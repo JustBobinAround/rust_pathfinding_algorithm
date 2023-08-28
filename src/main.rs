@@ -1,4 +1,4 @@
-use std::{collections::{HashSet, HashMap, VecDeque}, sync::{Arc, RwLock, atomic::AtomicI32}, time::Instant};
+use std::{collections::{HashSet, HashMap, VecDeque}, time::Instant};
 use rand::prelude::*;
 use rayon::prelude::*;
 
@@ -148,7 +148,7 @@ pub fn print_tiles(
             let coords = (i as i32, j as i32);
             if coords == source {
                 to_print.push('0');
-            } else if let Some((distance, cardinal)) = distances.get(&coords){
+            } else if let Some((_distance, cardinal)) = distances.get(&coords){
                 to_print.push(cardinal.get_char_eq());
             } else if tiles.contains(&coords){
                 to_print.push('.');
@@ -174,7 +174,7 @@ pub fn print_tiles_dis(
             let coords = (i as i32, j as i32);
             if coords == source {
                 to_print.push_str("  0");
-            } else if let Some((distance, cardinal)) = distances.get(&coords){
+            } else if let Some((distance, _cardinal)) = distances.get(&coords){
                 if *distance < 10 as usize {
                     to_print.push_str(&format!("  {}",distance));
                 } else {
@@ -194,8 +194,10 @@ pub fn print_tiles_dis(
 fn main() {
     let start_time = Instant::now();
     let size = 64;
+    println!("Generating map of size 64");
     let tiles = generate_tile(size);
     
+    println!("Calculating all paths");
     let distance_maps: Vec<_> = tiles
         .par_iter()
         .map(|tile| (tile, get_distances(*tile, &tiles)))
@@ -206,6 +208,12 @@ fn main() {
     let end_time = Instant::now();
     let elapsed_time = end_time - start_time;
 
-    println!("Elapsed time: {:.2?}", elapsed_time);
+    if let Some((tile, map)) = distance_maps.last(){
+        print_tiles(**tile, size, &tiles, &map);
+        println!("The map above is the last generated map out of {} maps.
+All maps were generated in a time of: {:.2?}
+Follow the arrows will always lead back to {:?}", distance_maps.len(),elapsed_time, tile);
+    } 
+
 }
 
