@@ -1,36 +1,14 @@
-use std::{
-    collections::{VecDeque, HashMap, BTreeSet},
-    sync::{Arc, Mutex},
-};
-
-use rayon::prelude::*; // Import Rayon's prelude
+use std::{collections::{HashSet, HashMap, VecDeque}, time::Instant};
 use rand::prelude::*;
+use rayon::prelude::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-enum Cardinal {
+pub enum Cardinal {
     U,
     R,
     D,
     L,
 }
-
-macro_rules! lock_as_mut {
-    (|$var:ident | $custom_code: block) => {
-        let $var = $var.clone();
-        if let Ok(mut $var) = $var.lock() {
-            $custom_code
-        };
-    };
-}
-
-macro_rules! lock_readonly {
-    (|$var:ident | $custom_code: block) => {
-        if let Ok($var) = $var.lock() {
-            $custom_code
-        };
-    };
-}
-
 
 impl Cardinal {
     pub fn inverse(&self) -> Cardinal {
@@ -58,6 +36,11 @@ impl Cardinal {
             Cardinal::L => (-1, 0),
         }
     }
+    pub fn delta_from(&self, coord: (i32,i32)) -> (i32, i32) {
+        let (dx, dy) = self.delta();
+        (coord.0+dx, coord.1+dy)
+    }
+
     pub fn iter_all() -> Vec<Cardinal> {
         let mut cardinals: Vec<Cardinal> = Vec::new();
 
@@ -68,316 +51,169 @@ impl Cardinal {
 
         return cardinals;
     }
+}
 
-    pub fn inverted_list(&self) -> BTreeSet<Cardinal>{
-        let mut cardinals: BTreeSet<Cardinal> = BTreeSet::new();
-        cardinals.insert(Cardinal::U);
-        cardinals.insert(Cardinal::R);
-        cardinals.insert(Cardinal::D);
-        cardinals.insert(Cardinal::L);
 
-        cardinals.remove(self);
-        cardinals.remove(&self.inverse());
-        return cardinals;
+
+pub fn generate_tile(size: i32) -> HashSet<(i32,i32)> {
+    let mut tiles: HashSet<(i32,i32)> = HashSet::new();
+    let mut rng = rand::thread_rng();
+    for j in 0..size {
+        for i in 0..size {
+            let prob: f64 = rng.gen(); // generates a float between 0 and 1
+            let coords = (i as i32, j as i32);
+
+            if prob > 0.2 {
+                tiles.insert(coords);
+            }
+        }
     }
 
-
+    return tiles;
 }
 
-#[derive(Debug, Clone)]
-struct Tile {
-    coords: (i32, i32),
-    is_obstruction: bool,
-    distance_map: HashMap<(i32, i32), usize>,
-    cardinal_map: HashMap<(i32, i32), Cardinal>,
+pub fn get_distances(
+    source: (i32, i32),
+    tiles: &HashSet<(i32,i32)>,
+) -> HashMap<(i32, i32), (usize, Cardinal)>{
+    let mut distances: HashMap<(i32, i32), (usize, Cardinal)> = HashMap::new();
+    let mut c_stack: VecDeque<((i32,i32), (Cardinal, usize))> = VecDeque::new();
+    for neighbor in Cardinal::iter_all(){
+        if tiles.contains(&neighbor.delta_from(source)){
+            c_stack.push_front((source, (neighbor, 0)));
+        }
+    }
+
+    loop{
+        //print_tiles(40, tiles, &distances);
+        if let Some((coord, (cardinal, count))) = c_stack.pop_back(){
+            (distances, c_stack) = traverse(coord, count, cardinal, &tiles, c_stack, distances);
+        } else {
+            break;
+        }
+    }
+
+    distances
 }
 
-struct Board {
-    tiles: Vec<Tile>,
-    size: usize,
+
+pub fn traverse(
+    source: (i32, i32), 
+    mut count: usize, 
+    cardinal: Cardinal, 
+    tiles: &HashSet<(i32,i32)>, 
+    mut c_stack: VecDeque<((i32,i32), (Cardinal, usize))>,
+    mut distances: HashMap<(i32,i32), (usize, Cardinal)>
+) -> (HashMap<(i32,i32), (usize, Cardinal)>, VecDeque<((i32,i32), (Cardinal, usize))>){
+    let mut current_coord = source;
+
+    loop{
+        current_coord = cardinal.delta_from(current_coord);
+        count += 1;
+        if !tiles.contains(&current_coord) || distances.contains_key(&current_coord){
+            break;
+        } else {
+            distances.insert(current_coord, (count, cardinal.inverse()));
+        }
+        let mut min = usize::MAX;
+        for neighbor in Cardinal::iter_all(){
+            let delta = neighbor.delta_from(current_coord);
+            if let Some((size, _stored_cardinal)) = distances.get_mut(&delta){
+                if *size < min {
+                    min = *size;
+                    if let Some((_current_size, current_coord)) = distances.get_mut(&current_coord){
+                        *current_coord = neighbor;
+                    }
+                }
+            } else {
+                if neighbor!=cardinal{
+                    c_stack.push_front((current_coord, (neighbor, count)));
+                }
+            }
+        }
+    }
+
+    (distances, c_stack)
 }
 
-impl Board {
-    pub fn generate_board(size: usize) -> Board {
-        let mut tiles: Vec<Tile> = Vec::new();
-        let mut rng = rand::thread_rng();
-        for j in 0..size {
-            for i in 0..size {
-                let prob: f64 = rng.gen(); // generates a float between 0 and 1
+pub fn print_tiles( 
+    source: (i32,i32), 
+    size: i32, 
+    tiles: &HashSet<(i32,i32)>, 
+    distances: &HashMap<(i32,i32), (usize, Cardinal)>
+) {
+    let mut to_print = String::new();
+    for j in 0..size {
+        for i in 0..size {
+            let coords = (i as i32, j as i32);
+            if coords == source {
+                to_print.push('0');
+            } else if let Some((_distance, cardinal)) = distances.get(&coords){
+                to_print.push(cardinal.get_char_eq());
+            } else if tiles.contains(&coords){
+                to_print.push('.');
+            } else {
+                to_print.push('#');
+            }
 
-                if prob > 0.2 {
-                    tiles.push(Tile {
-                        coords: (i as i32, j as i32),
-                        is_obstruction: false,
-                        distance_map: HashMap::new(),
-                        cardinal_map: HashMap::new(),
-                    });
+        }
+        to_print.push('\n');
+    }
+    println!("{}", to_print);
+}
+
+pub fn print_tiles_dis( 
+    source: (i32,i32), 
+    size: i32, 
+    tiles: &HashSet<(i32,i32)>, 
+    distances: &HashMap<(i32,i32), (usize, Cardinal)>
+) {
+    let mut to_print = String::new();
+    for j in 0..size {
+        for i in 0..size {
+            let coords = (i as i32, j as i32);
+            if coords == source {
+                to_print.push_str("  0");
+            } else if let Some((distance, _cardinal)) = distances.get(&coords){
+                if *distance < 10 as usize {
+                    to_print.push_str(&format!("  {}",distance));
                 } else {
-                    tiles.push(Tile {
-                        coords: (i as i32, j as i32),
-                        is_obstruction: true,
-                        distance_map: HashMap::new(),
-                        cardinal_map: HashMap::new(),
-                    });
+                    to_print.push_str(&format!(" {}",distance));
                 }
-            }
-        }
-
-        Board { tiles, size }
-    }
-
-    pub fn get_all_distances(mut board: Board) {
-
-        let tiles = board.tiles.clone();
-        let board = Arc::new(Mutex::new(board));
-        
-        tiles.par_iter().for_each(|tile| {
-            let (x, y) = tile.coords;
-            let board = board.clone();
-            if let Ok(mut board) = board.lock(){
-                board.get_cardinals(x, y);
-                board.print(tile.coords);
-            };
-            println!();
-        });
-    }
-
-    pub fn get_distances(&mut self, x: i32, y: i32) {
-        let count:usize = 0;
-        let source = (x,y);
-        let mut c_stack: VecDeque<((i32, i32),usize)> = VecDeque::new();
-
-        if let Some(tile) = self.get_mut_tile(x, y){
-            tile.distance_map.insert(source, count);
-        }
-        for _ in 0..self.get_next_neighbor(source, x, y).1 {
-            c_stack.push_back(((x,y), count));
-        }
-
-        loop {
-            if let Some(((nx, ny), count)) = c_stack.pop_back() {
-                if let Some(cardinal) = self.get_next_neighbor(source, nx, ny).0{
-                    c_stack = self.traverse_cardinal(source, c_stack, cardinal, nx, ny, count);
-                }
+            } else if tiles.contains(&coords){
+                to_print.push_str("  .");
             } else {
-                break;
-            }
-        }
-    }
-
-    pub fn get_cardinals(&mut self, x: i32, y: i32) {
-        
-        let source = (x,y);
-        self.get_distances(x, y);
-        for j in 0..(self.size) as i32 {
-            for i in 0..(self.size) as i32 {
-                let mut cardinal: Option<Cardinal> = None;
-                if let Some(tile) = self.get_mut_tile(i,j){
-                    if !tile.is_obstruction{
-                        cardinal = self.get_shortest_cardinal(source, i, j);
-                    }
-                }
-                if let Some(tile) = self.get_mut_tile(i,j){
-                    if let Some(cardinal) = cardinal{
-                        tile.cardinal_map.insert(source, cardinal);
-                    }
-                }
-            }
-        }
-    }
-    pub fn get_shortest_cardinal_dest(&mut self, source:(i32,i32), current_tile: (i32,i32)) -> Option<Cardinal>{
-        let mut shortest_cardinal = None;
-        let mut shortest: usize = usize::MAX;
-        for cardinal in Cardinal::iter_all(){
-            let (dx, dy) = cardinal.delta();
-            
-            if let Some(tile) = self.get_tile(current_tile.0+dx, current_tile.1+dy){
-                if let Some(distance) = tile.distance_map.get(&source){
-                    if distance < &shortest {
-                        shortest = *distance;
-                        shortest_cardinal = Some(cardinal);
-                    }
-                }
-            }
-        }
-
-        return shortest_cardinal;
-    }
-
-    pub fn get_shortest_cardinal(&self, source:(i32,i32), x: i32, y: i32) -> Option<Cardinal>{
-        let mut shortest_cardinal = None;
-        let mut shortest: usize = usize::MAX;
-        for cardinal in Cardinal::iter_all(){
-            let (dx, dy) = cardinal.delta();
-            
-            if let Some(tile) = self.get_tile(x+dx, y+dy){
-                if let Some(distance) = tile.distance_map.get(&source){
-                    if distance < &shortest {
-                        shortest = *distance;
-                        shortest_cardinal = Some(cardinal);
-                    }
-                }
-            }
-        }
-
-        return shortest_cardinal;
-    }
-
-    pub fn traverse_cardinal(
-        &mut self,
-        source: (i32, i32),
-        mut c_stack: VecDeque<((i32, i32), usize)>,
-        cardinal: Cardinal,
-        mut x: i32,
-        mut y: i32,
-        mut count: usize
-    ) -> VecDeque<((i32, i32), usize)> {
-        let (dx, dy) = cardinal.delta();
-
-        loop{
-            count += 1;
-            x += dx;
-            y += dy;
-            if x<0 || y <0 || x>=self.size as i32 || y >=self.size as i32{
-                break;
+                to_print.push_str("  #");
             }
 
-
-            let has_neighbors = self.get_next_neighbor(source, x, y).1;
-
-            if let Some(tile) = self.get_mut_tile(x,y) {
-                if tile.is_obstruction || tile.distance_map.contains_key(&source){
-                    break;
-                }
-                tile.distance_map.insert(source, count);
-                for _ in 0..has_neighbors {
-                    c_stack.push_front(((x,y), count));
-                }
-            } else {
-                break;
-            }
         }
-        c_stack
+        to_print.push('\n');
     }
-
-    fn get_next_neighbor(&mut self,source: (i32,i32) , x: i32, y: i32,) -> (Option<Cardinal>, usize) {
-        let mut cardinal_opt: Option<Cardinal> = None;
-        let mut count:usize = 0;
-        for cardinal in Cardinal::iter_all() {
-            let (dx, dy) = cardinal.delta(); 
-
-            if let Some(tile) = self.get_tile(x+dx, y+dy){
-                if !(tile.distance_map.contains_key(&source) || tile.is_obstruction) {
-                    cardinal_opt = Some(cardinal);
-                    count += 1;
-                }
-            }
-        }
-        return (cardinal_opt, count);
-    }
-
-
-    fn get_vec_idx(&self, x: i32, y: i32) -> Option<usize> {
-        if x>=0 && y>=0 && x<self.size as i32 && y < self.size as i32 {
-            Some(((y * self.size as i32) + x) as usize)
-        } else {
-            None
-        }
-    }
-
-    pub fn get_tile(&self, x: i32, y: i32) -> Option<&Tile> {
-        if let Some(pos) = self.get_vec_idx(x, y){
-            return self.tiles.get(pos);
-        } else {
-            return None;
-        }
-    }
-
-    pub fn get_mut_tile(&mut self, x: i32, y: i32) -> Option<&mut Tile> {
-        if let Some(pos) = self.get_vec_idx(x, y){
-            return self.tiles.get_mut(pos);
-        } else {
-            return None;
-        }
-    }
-
-    pub fn print_dis(&self, source: (i32,i32)) {
-        let mut to_print = String::new();
-        for j in 0..self.size {
-            for i in 0..self.size {
-                if let Some(tile) = self.get_tile(i as i32,j as i32) {
-                    if source == (i as i32,j as i32) {
-                        to_print.push_str("  0");
-                    } else if let Some(count) = tile.distance_map.get(&source){
-                        if count < &10 {
-                            let count = count.to_string();
-                            to_print.push_str(&format!("  {}", count));
-                        } else if count< &100{
-                            let count = count.to_string();
-                            to_print.push_str(&format!(" {}", count));
-                        } else {
-                            to_print.push_str("  #");
-                        }
-                    } else if tile.is_obstruction {
-                        to_print.push_str("  #");
-                    } else {
-                        to_print.push_str("  .");
-                    }
-                }
-            }
-            to_print.push('\n');
-        }
-        println!("{}", to_print);
-    }
-
-    pub fn print(&self, source: (i32,i32)) {
-        let mut to_print = String::new();
-        for j in 0..self.size {
-            for i in 0..self.size {
-
-                if let Some(tile) = self.get_tile(i as i32, j as i32) {
-                    if source == (i as i32,j as i32) {
-                        to_print.push('0');
-                    } else if tile.is_obstruction {
-                        to_print.push('#');
-                    } else if let Some(cardinal) = tile.cardinal_map.get(&source){
-                        to_print.push(cardinal.get_char_eq());
-                    } else {
-                        to_print.push('.');
-                    }
-                }
-            }
-            to_print.push('\n');
-        }
-        println!("{}", to_print);
-    }
+    println!("{}", to_print);
 }
-
 fn main() {
+    let start_time = Instant::now();
+    let size = 64;
+    println!("Generating map of size 64");
+    let tiles = generate_tile(size);
+    
+    println!("Calculating all paths");
+    let distance_maps: Vec<_> = tiles
+        .par_iter()
+        .map(|tile| (tile, get_distances(*tile, &tiles)))
+        .collect();
 
+
+
+    let end_time = Instant::now();
+    let elapsed_time = end_time - start_time;
+
+    if let Some((tile, map)) = distance_maps.last(){
+        print_tiles(**tile, size, &tiles, &map);
+        println!("The map above is the last generated map out of {} maps.
+All maps were generated in a time of: {:.2?}
+Follow the arrows will always lead back to {:?}", distance_maps.len(),elapsed_time, tile);
+    } 
 
 }
-#[cfg(test)]
-mod tests { // TODO: Make tests better and add assertions. Also, probably will want to move these somewhere else at some point
-
-    use super::*;
-
-    #[test]
-    fn performance_run(){
-        //current runtimes 20:1s, 50:5.5s, 60:12s
-        //not looking good rn
-        
-        let size: usize = 20;
-        let board = Board::generate_board(size);
-        Board::get_all_distances(board);
-        let size: usize = 50;
-        let board = Board::generate_board(size);
-        Board::get_all_distances(board);
-        let size: usize = 60;
-        let board = Board::generate_board(size);
-        Board::get_all_distances(board);
-    }
-
-}
-
 
